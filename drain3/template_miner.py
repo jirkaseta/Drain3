@@ -225,12 +225,12 @@ class TemplateMiner:
             or None if log_message does not correspond to log_template.
         """
 
-        for delimiter in self.config.drain_extra_delimiters:
-            log_message = re.sub(delimiter, " ", log_message)
+        # for delimiter in self.config.drain_extra_delimiters:
+        #     log_message = re.sub(delimiter, " ", log_message)
 
         template_regex, param_group_name_to_mask_name = self._get_template_parameter_extraction_regex(
             log_template, exact_matching)
-
+        
         # Parameters are represented by specific named groups inside template_regex.
         parameter_match = re.match(template_regex, log_message)
 

@@ -12,15 +12,27 @@ from drain3.simple_profiler import Profiler, NullProfiler
 
 
 class LogCluster:
-    __slots__ = ["log_template_tokens", "cluster_id", "size"]
+    __slots__ = ["log_template_tokens", "cluster_id", "size", "delimiter_info"]
 
-    def __init__(self, log_template_tokens: Iterable[str], cluster_id: int) -> None:
+    def __init__(self, log_template_tokens: Iterable[str], cluster_id: int, delimiter_info: Optional[Sequence[str]] = None) -> None:
         self.log_template_tokens = tuple(log_template_tokens)
         self.cluster_id = cluster_id
         self.size = 1
+        # Store delimiter information: sequence of delimiters between tokens
+        self.delimiter_info = tuple(delimiter_info) if delimiter_info is not None else None
 
     def get_template(self) -> str:
-        return ' '.join(self.log_template_tokens)
+        if self.delimiter_info is not None and len(self.delimiter_info) == len(self.log_template_tokens) - 1:
+            # Reconstruct template with original delimiters
+            result = []
+            for i, token in enumerate(self.log_template_tokens):
+                result.append(token)
+                if i < len(self.delimiter_info):
+                    result.append(self.delimiter_info[i])
+            return ''.join(result)
+        else:
+            # Fallback to space-separated tokens
+            return ' '.join(self.log_template_tokens)
 
     def __str__(self) -> str:
         return f"ID={str(self.cluster_id).ljust(5)} : size={str(self.size).ljust(10)}: {self.get_template()}"
@@ -184,9 +196,50 @@ class DrainBase(ABC):
             content = content.replace(delimiter, " ")
         content_tokens = content.split()
         return content_tokens
+    
+    def get_content_as_tokens_with_delimiters(self, content: str) -> Tuple[Sequence[str], Optional[Sequence[str]]]:
+        """
+        Tokenize content while preserving delimiter information.
+        Returns tokens and delimiter information between tokens.
+        """
+        import re
+        
+        content = content.strip()
+        if not self.extra_delimiters:
+            # No extra delimiters, just split by whitespace
+            content_tokens = content.split()
+            delimiters = [' '] * (len(content_tokens) - 1) if len(content_tokens) > 1 else []
+            return content_tokens, delimiters
+        
+        # Create regex pattern for all delimiters including whitespace
+        all_delimiters = list(self.extra_delimiters) + [' ', '\t', '\n']
+        # Escape special regex characters
+        escaped_delimiters = [re.escape(d) for d in all_delimiters]
+        delimiter_pattern = '[' + ''.join(escaped_delimiters) + ']+'
+        
+        # Split content while capturing delimiters
+        parts = re.split(f'({delimiter_pattern})', content)
+        
+        tokens = []
+        delimiters = []
+        
+        for i, part in enumerate(parts):
+            if i % 2 == 0:  # Even indices are tokens
+                if part:  # Skip empty strings
+                    tokens.append(part)
+            else:  # Odd indices are delimiters
+                if part and len(tokens) > 0:  # Only add delimiter if we have a preceding token
+                    delimiters.append(part)
+        
+        # Ensure delimiters list has correct length (should be len(tokens) - 1)
+        while len(delimiters) < len(tokens) - 1:
+            delimiters.append(' ')
+        delimiters = delimiters[:len(tokens) - 1]
+        
+        return tokens, delimiters if delimiters else None
 
     def add_log_message(self, content: str) -> Tuple[LogCluster, str]:
-        content_tokens = self.get_content_as_tokens(content)
+        content_tokens, delimiter_info = self.get_content_as_tokens_with_delimiters(content)
 
         if self.profiler:
             self.profiler.start_section("tree_search")
@@ -200,7 +253,7 @@ class DrainBase(ABC):
                 self.profiler.start_section("create_cluster")
             self.clusters_counter += 1
             cluster_id = self.clusters_counter
-            match_cluster = LogCluster(content_tokens, cluster_id)
+            match_cluster = LogCluster(content_tokens, cluster_id, delimiter_info)
             self.id_to_cluster[cluster_id] = match_cluster
             self.add_seq_to_prefix_tree(self.root_node, match_cluster)
             update_type = "cluster_created"
@@ -447,7 +500,7 @@ class Drain(DrainBase):
         assert full_search_strategy in ["always", "never", "fallback"]
 
         required_sim_th = 1.0
-        content_tokens = self.get_content_as_tokens(content)
+        content_tokens, _ = self.get_content_as_tokens_with_delimiters(content)
 
         # consider for future improvement:
         # It is possible to implement a recursive tree_search (first try exact token match and fallback to

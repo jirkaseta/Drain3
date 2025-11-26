@@ -10,21 +10,25 @@ from cachetools import LRUCache, Cache
 
 from drain3.simple_profiler import Profiler, NullProfiler
 
+import logging
+logger = logging.getLogger(__name__)
 
 class LogCluster:
-    __slots__ = ["log_template_tokens", "cluster_id", "size", "delimiter_info"]
+    __slots__ = ["log_template_tokens", "cluster_id", "size", "delimiter_info", "first_delimiter"]
 
     def __init__(self, log_template_tokens: Iterable[str], cluster_id: int, delimiter_info: Optional[Sequence[str]] = None) -> None:
         self.log_template_tokens = tuple(log_template_tokens)
         self.cluster_id = cluster_id
         self.size = 1
         # Store delimiter information: sequence of delimiters between tokens
-        self.delimiter_info = tuple(delimiter_info) if delimiter_info is not None else None
+        self.first_delimiter = delimiter_info[0] if delimiter_info else ''
+        self.delimiter_info = tuple(delimiter_info[1:]) if delimiter_info else None
 
     def get_template(self) -> str:
-        if self.delimiter_info is not None and len(self.delimiter_info) == len(self.log_template_tokens) - 1:
+        if self.delimiter_info is not None and len(self.delimiter_info) >= len(self.log_template_tokens) - 1:
             # Reconstruct template with original delimiters
             result = []
+            result.append(self.first_delimiter)
             for i, token in enumerate(self.log_template_tokens):
                 result.append(token)
                 if i < len(self.delimiter_info):
@@ -228,13 +232,14 @@ class DrainBase(ABC):
                 if part:  # Skip empty strings
                     tokens.append(part)
             else:  # Odd indices are delimiters
-                if part and len(tokens) > 0:  # Only add delimiter if we have a preceding token
-                    delimiters.append(part)
-        
+                if len(tokens) == 1 and not delimiters: # First delimiter before any token
+                    delimiters.append('')
+                delimiters.append(part) 
+
         # Ensure delimiters list has correct length (should be len(tokens) - 1)
         while len(delimiters) < len(tokens) - 1:
             delimiters.append(' ')
-        delimiters = delimiters[:len(tokens) - 1]
+        # delimiters = delimiters[:len(tokens)]
         
         return tokens, delimiters if delimiters else None
 

@@ -6,6 +6,7 @@ import re
 import time
 import zlib
 from typing import Optional, Mapping, MutableMapping, NamedTuple, Sequence, Tuple, Union
+from threading import RLock
 
 import jsonpickle  # type: ignore[import]
 from cachetools import LRUCache, cachedmethod
@@ -72,6 +73,7 @@ class TemplateMiner:
         self.masker = LogMasker(self.config.masking_instructions, self.config.mask_prefix, self.config.mask_suffix)
         self.parameter_extraction_cache: MutableMapping[Tuple[str, bool], str] = \
             LRUCache(self.config.parameter_extraction_cache_capacity)
+        self.parameter_extraction_cache_lock = RLock()
         self.last_save_time = time.time()
 
         if persistence_handler is not None:
@@ -248,7 +250,7 @@ class TemplateMiner:
 
         return extracted_parameters
 
-    @cachedmethod(lambda self: self.parameter_extraction_cache)
+    @cachedmethod(lambda self: self.parameter_extraction_cache, lock=lambda self: self.parameter_extraction_cache_lock)
     def _get_template_parameter_extraction_regex(self,
                                                  log_template: str,
                                                  exact_matching: bool) -> Tuple[str, Mapping[str, str]]:

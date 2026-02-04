@@ -36,7 +36,7 @@ class LogCluster:
             return ''.join(result)
         else:
             # Fallback to space-separated tokens
-            return ' '.join(self.log_template_tokens)
+            return ''.join(self.log_template_tokens)
 
     def __str__(self) -> str:
         return f"ID={str(self.cluster_id).ljust(5)} : size={str(self.size).ljust(10)}: {self.get_template()}"
@@ -84,7 +84,8 @@ class DrainBase(ABC):
                  extra_delimiters: Sequence[str] = (),
                  profiler: Profiler = NullProfiler(),
                  param_str: str = "<*>",
-                 parametrize_numeric_tokens: bool = True) -> None:
+                 parametrize_numeric_tokens: bool = True,
+                 tokenizer: Optional[object] = None) -> None:
         """
         Create a new Drain instance.
 
@@ -116,6 +117,7 @@ class DrainBase(ABC):
         self.max_clusters = max_clusters
         self.param_str = param_str
         self.parametrize_numeric_tokens = parametrize_numeric_tokens
+        self.tokenizer = tokenizer  # HuggingFace Tokenizer object or None
 
         self.id_to_cluster: MutableMapping[int, Optional[LogCluster]] = \
             {} if max_clusters is None else LogClusterCache(maxsize=max_clusters)
@@ -195,6 +197,13 @@ class DrainBase(ABC):
             print(out_str, file=file)
 
     def get_content_as_tokens(self, content: str) -> Sequence[str]:
+        """
+        Tokenize content using the provided HuggingFace Tokenizer if available,
+        otherwise use the default whitespace/delimiter split logic.
+        """
+        if self.tokenizer is not None:
+            # HuggingFace Tokenizer: expects encode(content).tokens
+            return self.tokenizer.encode(content).tokens
         content = content.strip()
         for delimiter in self.extra_delimiters:
             content = content.replace(delimiter, " ")
@@ -204,29 +213,27 @@ class DrainBase(ABC):
     def get_content_as_tokens_with_delimiters(self, content: str) -> Tuple[Sequence[str], Optional[Sequence[str]]]:
         """
         Tokenize content while preserving delimiter information.
-        Returns tokens and delimiter information between tokens.
+        If a HuggingFace Tokenizer is provided, delimiter info is not available and will be None.
         """
+        if self.tokenizer is not None:
+            tokens = self.tokenizer.encode(content).tokens
+            return tokens, None
         import re
-        
         content = content.strip()
         if not self.extra_delimiters:
             # No extra delimiters, just split by whitespace
             content_tokens = content.split()
             delimiters = [' '] * (len(content_tokens) - 1) if len(content_tokens) > 1 else []
             return content_tokens, delimiters
-        
         # Create regex pattern for all delimiters including whitespace
         all_delimiters = list(self.extra_delimiters) + [' ', '\t', '\n']
         # Escape special regex characters
         escaped_delimiters = [re.escape(d) for d in all_delimiters]
         delimiter_pattern = '[' + ''.join(escaped_delimiters) + ']+'
-        
         # Split content while capturing delimiters
         parts = re.split(f'({delimiter_pattern})', content)
-        
         tokens = []
         delimiters = []
-        
         for i, part in enumerate(parts):
             if i % 2 == 0:  # Even indices are tokens
                 if part:  # Skip empty strings
@@ -235,17 +242,14 @@ class DrainBase(ABC):
                 if len(tokens) == 1 and not delimiters: # First delimiter before any token
                     delimiters.append('')
                 delimiters.append(part) 
-
         # Ensure delimiters list has correct length (should be len(tokens) - 1)
         while len(delimiters) < len(tokens) - 1:
             delimiters.append(' ')
-        # delimiters = delimiters[:len(tokens)]
-        
         return tokens, delimiters if delimiters else None
 
     def add_log_message(self, content: str) -> Tuple[LogCluster, str]:
         content_tokens, delimiter_info = self.get_content_as_tokens_with_delimiters(content)
-
+        print("Content Tokens:", content_tokens)
         if self.profiler:
             self.profiler.start_section("tree_search")
         match_cluster = self.tree_search(self.root_node, content_tokens, self.sim_th, False)
@@ -336,6 +340,9 @@ class DrainBase(ABC):
 
 
 class Drain(DrainBase):
+
+    def __init__(self, *args, tokenizer: Optional[object] = None, **kwargs):
+        super().__init__(*args, tokenizer=tokenizer, **kwargs)
 
     def tree_search(self,
                     root_node: Node,

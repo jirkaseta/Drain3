@@ -29,11 +29,13 @@ class TemplateMiner:
 
     def __init__(self,
                  persistence_handler: Optional[PersistenceHandler] = None,
-                 config: Optional[TemplateMinerConfig] = None):
+                 config: Optional[TemplateMinerConfig] = None,
+                 tokenizer: Optional[object] = None):
         """
         Wrapper for Drain with persistence and masking support
         :param persistence_handler: The type of persistence to use. When None, no persistence is applied.
         :param config: Configuration object. When none, configuration is loaded from default .ini file (if exist)
+        :param tokenizer: HuggingFace Tokenizer object to use for tokenization (optional)
         """
         logger.info("Starting Drain3 template miner")
 
@@ -67,7 +69,8 @@ class TemplateMiner:
             extra_delimiters=self.config.drain_extra_delimiters,
             profiler=self.profiler,
             param_str=param_str,
-            parametrize_numeric_tokens=self.config.parametrize_numeric_tokens
+            parametrize_numeric_tokens=self.config.parametrize_numeric_tokens,
+            tokenizer=tokenizer
         )
 
         self.masker = LogMasker(self.config.masking_instructions, self.config.mask_prefix, self.config.mask_suffix)

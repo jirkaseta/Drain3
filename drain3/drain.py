@@ -4,13 +4,14 @@
 
 from abc import ABC, abstractmethod
 from typing import cast, Collection, IO, Iterable, MutableMapping, MutableSequence, Optional, Sequence, Tuple, \
-    TYPE_CHECKING, TypeVar, Union
+    TYPE_CHECKING, TypeVar, Union, Any, Dict, Set
 
 from cachetools import LRUCache, Cache
 
 from drain3.simple_profiler import Profiler, NullProfiler
 
 import logging
+import json
 logger = logging.getLogger(__name__)
 
 class LogCluster:
@@ -120,6 +121,7 @@ class DrainBase(ABC):
         self.id_to_cluster: MutableMapping[int, Optional[LogCluster]] = \
             {} if max_clusters is None else LogClusterCache(maxsize=max_clusters)
         self.clusters_counter = 0
+        self.cluster_examples: MutableMapping[int, MutableSequence[str]] = {}
 
     @property
     def clusters(self) -> Collection[LogCluster]:
@@ -278,10 +280,140 @@ class DrainBase(ABC):
             # noinspection PyStatementEffect
             self.id_to_cluster[match_cluster.cluster_id]
 
+        examples = self.cluster_examples.setdefault(match_cluster.cluster_id, [])
+        if len(examples) < 3 and content not in examples:
+            examples.append(content)
+
+        stale_cluster_ids = [cid for cid in self.cluster_examples.keys() if cid not in self.id_to_cluster]
+        for cid in stale_cluster_ids:
+            del self.cluster_examples[cid]
+
         if self.profiler:
             self.profiler.end_section()
 
         return match_cluster, update_type
+
+    def export_tree_structure(self) -> Dict[str, Any]:
+        """
+        Export the full parse tree into a deterministic, analysis-ready structure.
+        """
+
+        def build_node(node: Node, token: str, depth: int, node_id: int) -> Tuple[Dict[str, Any], Set[int], int]:
+            valid_cluster_ids = sorted(cluster_id for cluster_id in node.cluster_ids if cluster_id in self.id_to_cluster)
+
+            child_items = sorted(node.key_to_child_node.items(), key=lambda item: str(item[0]))
+            children_payload: MutableSequence[Dict[str, Any]] = []
+            subtree_cluster_ids: Set[int] = set(valid_cluster_ids)
+
+            next_node_id = node_id + 1
+            for child_token, child_node in child_items:
+                child_payload, child_cluster_ids, next_node_id = build_node(
+                    child_node, str(child_token), depth + 1, next_node_id
+                )
+                children_payload.append(child_payload)
+                subtree_cluster_ids.update(child_cluster_ids)
+
+            payload: Dict[str, Any] = {
+                "node_id": node_id,
+                "depth": depth,
+                "token": token,
+                "template_count": len(subtree_cluster_ids),
+                "children": children_payload,
+            }
+
+            if valid_cluster_ids:
+                payload["cluster_ids"] = valid_cluster_ids
+
+            is_leaf = len(child_items) == 0
+            if is_leaf:
+                if len(valid_cluster_ids) == 1:
+                    cluster_id = valid_cluster_ids[0]
+                    cluster = self.id_to_cluster.get(cluster_id)
+                    if cluster is not None:
+                        payload["log_template"] = cluster.get_template()
+                        payload["template_tokens"] = list(cluster.log_template_tokens)
+                        payload["occurrences"] = cluster.size
+                        payload["example_logs"] = list(self.cluster_examples.get(cluster_id, []))[:3]
+                elif len(valid_cluster_ids) > 1:
+                    clusters = [self.id_to_cluster.get(cluster_id) for cluster_id in valid_cluster_ids]
+                    clusters = [cluster for cluster in clusters if cluster is not None]
+                    payload["log_template"] = "<multiple>"
+                    payload["template_tokens"] = []
+                    payload["occurrences"] = sum(cluster.size for cluster in clusters)
+
+                    merged_examples: MutableSequence[str] = []
+                    for cluster_id in valid_cluster_ids:
+                        for example in self.cluster_examples.get(cluster_id, []):
+                            if example not in merged_examples:
+                                merged_examples.append(example)
+                            if len(merged_examples) == 3:
+                                break
+                        if len(merged_examples) == 3:
+                            break
+                    payload["example_logs"] = merged_examples
+
+                    payload["cluster_templates"] = [
+                        {
+                            "cluster_id": cluster.cluster_id,
+                            "log_template": cluster.get_template(),
+                            "template_tokens": list(cluster.log_template_tokens),
+                            "occurrences": cluster.size,
+                            "example_logs": list(self.cluster_examples.get(cluster.cluster_id, []))[:3],
+                        }
+                        for cluster in clusters
+                    ]
+
+            return payload, subtree_cluster_ids, next_node_id
+
+        root_payload, _, _ = build_node(self.root_node, "<root>", 0, 0)
+        return {"root": root_payload}
+
+    @staticmethod
+    def _yaml_scalar(value: Any) -> str:
+        if isinstance(value, str):
+            return json.dumps(value, ensure_ascii=False)
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    @classmethod
+    def _yaml_dump_lines(cls, value: Any, indent: int = 0) -> MutableSequence[str]:
+        pad = " " * indent
+        lines: MutableSequence[str] = []
+
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, (dict, list)):
+                    lines.append(f"{pad}{key}:")
+                    lines.extend(cls._yaml_dump_lines(item, indent + 2))
+                else:
+                    lines.append(f"{pad}{key}: {cls._yaml_scalar(item)}")
+            return lines
+
+        if isinstance(value, list):
+            if not value:
+                lines.append(f"{pad}[]")
+                return lines
+
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    lines.append(f"{pad}-")
+                    lines.extend(cls._yaml_dump_lines(item, indent + 2))
+                else:
+                    lines.append(f"{pad}- {cls._yaml_scalar(item)}")
+            return lines
+
+        lines.append(f"{pad}{cls._yaml_scalar(value)}")
+        return lines
+
+    def export_tree_yaml(self) -> str:
+        """
+        Export the parse tree as valid YAML with deterministic ordering and 2-space indentation.
+        """
+        tree_data = self.export_tree_structure()
+        return "\n".join(self._yaml_dump_lines(tree_data, indent=0))
 
     def get_total_cluster_size(self) -> int:
         size = 0

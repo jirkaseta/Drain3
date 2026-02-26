@@ -151,13 +151,13 @@ class TemplateMiner:
             "cluster_count": len(self.drain.clusters)
         }
 
-        if self.persistence_handler is not None:
-            self.profiler.start_section("save_state")
-            snapshot_reason = self.get_snapshot_reason(change_type, cluster.cluster_id)
-            if snapshot_reason:
-                self.save_state(snapshot_reason)
-                self.last_save_time = time.time()
-            self.profiler.end_section()
+        # if self.persistence_handler is not None:
+        #     self.profiler.start_section("save_state")
+        #     snapshot_reason = self.get_snapshot_reason(change_type, cluster.cluster_id)
+        #     if snapshot_reason:
+        #         self.save_state(snapshot_reason)
+        #         self.last_save_time = time.time()
+        #     self.profiler.end_section()
 
         self.profiler.end_section("total")
         self.profiler.report(self.config.profiling_report_sec)
@@ -186,6 +186,18 @@ class TemplateMiner:
         masked_content = self.masker.mask(log_message)
         matched_cluster = self.drain.match(masked_content, full_search_strategy)
         return matched_cluster
+
+    def export_tree_structure(self) -> Mapping[str, object]:
+        """
+        Export Drain parse tree as a deterministic nested dictionary.
+        """
+        return self.drain.export_tree_structure()
+
+    def export_tree_yaml(self) -> str:
+        """
+        Export Drain parse tree as deterministic YAML with 2-space indentation.
+        """
+        return self.drain.export_tree_yaml()
 
     def get_parameter_list(self, log_template: str, log_message: str) -> Sequence[str]:
         """
